@@ -19,7 +19,7 @@ export function RunHistory({ runs, activeRunId, onSelect }: RunHistoryProps) {
         <h2 className="text-lg font-semibold">Previous runs</h2>
       </div>
 
-      <div className="space-y-3">
+      <div className="data-scroll space-y-3 xl:max-h-[320px] xl:overflow-y-auto xl:pr-1">
         {runs.length === 0 ? (
           <p className="text-sm text-slate-400">No runs yet. Launch a prompt to build a local history.</p>
         ) : (

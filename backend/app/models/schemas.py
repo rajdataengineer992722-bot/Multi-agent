@@ -35,6 +35,17 @@ class AgentName(str, Enum):
     composer = "composer"
 
 
+class WorkflowPhase(str, Enum):
+    planning = "planning"
+    research = "research"
+    execution = "execution"
+    review = "review"
+    revision = "revision"
+    composition = "composition"
+    completed = "completed"
+    error = "error"
+
+
 class TaskRequest(BaseModel):
     prompt: str = Field(min_length=3, max_length=4000)
 
@@ -97,6 +108,19 @@ class FinalOutput(BaseModel):
     final_deliverable: str
 
 
+class OrchestrationRuntime(BaseModel):
+    phase: WorkflowPhase = WorkflowPhase.planning
+    current_agent: AgentName = AgentName.orchestrator
+    execution_iterations: int = 0
+    review_iterations: int = 0
+    max_review_loops: int = 1
+    needs_revision: bool = False
+    revision_notes: list[str] = Field(default_factory=list)
+    completed_nodes: list[str] = Field(default_factory=list)
+    active_node: str = "bootstrap"
+    last_error: str | None = None
+
+
 class AgentSnapshot(BaseModel):
     name: AgentName
     role: str
@@ -130,6 +154,7 @@ class RunRecord(BaseModel):
     execution: ExecutionOutput | None = None
     review: ReviewOutput | None = None
     final: FinalOutput | None = None
+    runtime: OrchestrationRuntime = Field(default_factory=OrchestrationRuntime)
     error: str | None = None
 
 

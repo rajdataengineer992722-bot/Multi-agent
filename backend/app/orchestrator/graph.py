@@ -3,9 +3,9 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncGenerator
 from datetime import datetime, timezone
-from typing import Any, Callable, TypedDict
+from typing import Any, Callable, Literal, TypedDict
 
-from langgraph.graph import END, StateGraph
+from langgraph.graph import END, START, StateGraph
 
 from app.agents.composer import ComposerAgent, ComposerInput
 from app.agents.executor import ExecutorAgent, ExecutorInput
@@ -18,6 +18,7 @@ from app.models.schemas import (
     AgentStatus,
     ExecutionOutput,
     FinalOutput,
+    OrchestrationRuntime,
     PlanStep,
     PlannerOutput,
     ResearchOutput,
@@ -25,6 +26,7 @@ from app.models.schemas import (
     RunRecord,
     RunStatus,
     WorkflowEvent,
+    WorkflowPhase,
 )
 from app.services.llm import LLMService
 from app.storage.history import HistoryStore
@@ -37,6 +39,7 @@ def now() -> datetime:
 class GraphState(TypedDict, total=False):
     prompt: str
     run: RunRecord
+    runtime: OrchestrationRuntime
     plan: PlannerOutput | None
     research: ResearchOutput | None
     execution: ExecutionOutput | None
@@ -57,16 +60,26 @@ class MultiAgentOrchestrator:
 
     def _build_graph(self):
         builder = StateGraph(GraphState)
+        builder.add_node("bootstrap", self._bootstrap_node)
         builder.add_node("planner", self._planner_node)
         builder.add_node("researcher", self._researcher_node)
         builder.add_node("executor", self._executor_node)
         builder.add_node("reviewer", self._reviewer_node)
         builder.add_node("composer", self._composer_node)
-        builder.set_entry_point("planner")
+
+        builder.add_edge(START, "bootstrap")
+        builder.add_edge("bootstrap", "planner")
         builder.add_edge("planner", "researcher")
         builder.add_edge("researcher", "executor")
         builder.add_edge("executor", "reviewer")
-        builder.add_edge("reviewer", "composer")
+        builder.add_conditional_edges(
+            "reviewer",
+            self._route_after_review,
+            {
+                "executor": "executor",
+                "composer": "composer",
+            },
+        )
         builder.add_edge("composer", END)
         return builder.compile()
 
@@ -80,18 +93,39 @@ class MultiAgentOrchestrator:
             AgentSnapshot(name=AgentName.composer, role=self.composer.role),
         ]
 
-    async def stream_run(self, prompt: str) -> AsyncGenerator[str, None]:
+    def _initial_state(self, prompt: str) -> GraphState:
         run = RunRecord(prompt=prompt, status=RunStatus.running, agents=self._initial_agents())
         self._touch(run)
         self.store.save_run(run)
+        return {
+            "prompt": prompt,
+            "run": run,
+            "runtime": run.runtime.model_copy(deep=True),
+        }
+
+    async def stream_run(self, prompt: str) -> AsyncGenerator[str, None]:
+        state = self._initial_state(prompt)
+        run = state["run"]
         yield self._sse("run.started", {"run": run.model_dump(mode="json")})
 
         try:
-            completed_run = await self._execute_graph(run, prompt)
+            self._mark_status(run, AgentName.orchestrator, AgentStatus.running, "Workflow started")
+            self.store.save_run(run)
+            yield self._sse("agent.updated", {"run": run.model_dump(mode="json")})
+
+            async for chunk in self.graph.astream(state, stream_mode="updates"):
+                updated_run = self._extract_run_from_chunk(chunk) or run
+                self.store.save_run(updated_run)
+                yield self._sse("agent.updated", {"run": updated_run.model_dump(mode="json")})
+
+            completed_run = self.store.get_run(run.id) or run
+            self._finalize_run(completed_run)
             yield self._sse("run.completed", {"run": completed_run.model_dump(mode="json")})
         except Exception as exc:  # noqa: BLE001
             run.status = RunStatus.error
             run.error = str(exc)
+            run.runtime.phase = WorkflowPhase.error
+            run.runtime.last_error = str(exc)
             run.updated_at = now()
             self._mark_status(run, AgentName.orchestrator, AgentStatus.error, str(exc))
             self.store.save_run(run)
@@ -100,62 +134,96 @@ class MultiAgentOrchestrator:
         yield "event: done\ndata: {}\n\n"
 
     async def run_once(self, prompt: str) -> RunRecord:
-        run = RunRecord(prompt=prompt, status=RunStatus.running, agents=self._initial_agents())
-        self._touch(run)
-        self.store.save_run(run)
-        return await self._execute_graph(run, prompt)
-
-    async def _execute_graph(self, run: RunRecord, prompt: str) -> RunRecord:
+        state = self._initial_state(prompt)
+        run = state["run"]
         self._mark_status(run, AgentName.orchestrator, AgentStatus.running, "Workflow started")
         self.store.save_run(run)
-
-        final_state = await self.graph.ainvoke({"prompt": prompt, "run": run})
-        completed_run: RunRecord = final_state.get("run", run)
-        completed_run.status = RunStatus.completed
-        completed_run.updated_at = now()
-        self._mark_status(completed_run, AgentName.orchestrator, AgentStatus.completed, "Workflow completed")
-        self.store.save_run(completed_run)
+        final_state = await self.graph.ainvoke(state)
+        completed_run = final_state.get("run", run)
+        self._finalize_run(completed_run)
         return completed_run
+
+    async def _bootstrap_node(self, state: GraphState) -> GraphState:
+        run = state["run"]
+        runtime = state["runtime"]
+        runtime.active_node = "bootstrap"
+        runtime.current_agent = AgentName.orchestrator
+        runtime.phase = WorkflowPhase.planning
+        run.runtime = runtime
+        self._append_event(run, "workflow.bootstrap", "Initialized structured workflow state", AgentName.orchestrator)
+        return {**state, "run": run, "runtime": runtime}
 
     async def _planner_node(self, state: GraphState) -> GraphState:
         run = state["run"]
+        runtime = state["runtime"]
+        runtime.active_node = "planner"
+        runtime.current_agent = AgentName.planner
+        runtime.phase = WorkflowPhase.planning
+
         output = await self._run_with_retry(
             run=run,
+            runtime=runtime,
             agent=AgentName.planner,
             action=lambda: self.planner.run(state["prompt"]),
             fallback=lambda: self._fallback_plan(state["prompt"]),
         )
         run.plan = output
-        return {**state, "run": run, "plan": output}
+        return self._state_update(state, run=run, runtime=runtime, plan=output)
 
     async def _researcher_node(self, state: GraphState) -> GraphState:
         run = state["run"]
+        runtime = state["runtime"]
+        runtime.active_node = "researcher"
+        runtime.current_agent = AgentName.researcher
+        runtime.phase = WorkflowPhase.research
+
         output = await self._run_with_retry(
             run=run,
+            runtime=runtime,
             agent=AgentName.researcher,
             action=lambda: self.researcher.run(ResearcherInput(prompt=state["prompt"], plan=state["plan"])),
             fallback=lambda: self._fallback_research(state["prompt"], state["plan"]),
         )
         run.research = output
-        return {**state, "run": run, "research": output}
+        return self._state_update(state, run=run, runtime=runtime, research=output)
 
     async def _executor_node(self, state: GraphState) -> GraphState:
         run = state["run"]
+        runtime = state["runtime"]
+        runtime.active_node = "executor"
+        runtime.current_agent = AgentName.executor
+        runtime.phase = WorkflowPhase.revision if runtime.needs_revision else WorkflowPhase.execution
+        runtime.execution_iterations += 1
+
         output = await self._run_with_retry(
             run=run,
+            runtime=runtime,
             agent=AgentName.executor,
             action=lambda: self.executor.run(
-                ExecutorInput(prompt=state["prompt"], plan=state["plan"], research=state["research"])
+                ExecutorInput(
+                    prompt=state["prompt"],
+                    plan=state["plan"],
+                    research=state["research"],
+                    review_feedback=runtime.revision_notes,
+                    previous_execution=state.get("execution"),
+                )
             ),
             fallback=lambda: self._fallback_execution(state["plan"], state["research"]),
         )
         run.execution = output
-        return {**state, "run": run, "execution": output}
+        return self._state_update(state, run=run, runtime=runtime, execution=output)
 
     async def _reviewer_node(self, state: GraphState) -> GraphState:
         run = state["run"]
+        runtime = state["runtime"]
+        runtime.active_node = "reviewer"
+        runtime.current_agent = AgentName.reviewer
+        runtime.phase = WorkflowPhase.review
+        runtime.review_iterations += 1
+
         output = await self._run_with_retry(
             run=run,
+            runtime=runtime,
             agent=AgentName.reviewer,
             action=lambda: self.reviewer.run(
                 ReviewerInput(
@@ -167,13 +235,34 @@ class MultiAgentOrchestrator:
             ),
             fallback=lambda: self._fallback_review(),
         )
+
+        runtime.needs_revision = not output.approved and bool(output.revision_requests)
+        runtime.revision_notes = output.revision_requests
         run.review = output
-        return {**state, "run": run, "review": output}
+        self._append_event(
+            run,
+            "review.decision",
+            "Reviewer requested another execution pass" if runtime.needs_revision else "Reviewer approved output for composition",
+            AgentName.reviewer,
+            {
+                "approved": output.approved,
+                "review_iterations": runtime.review_iterations,
+                "revision_requests": output.revision_requests,
+            },
+        )
+        return self._state_update(state, run=run, runtime=runtime, review=output)
 
     async def _composer_node(self, state: GraphState) -> GraphState:
         run = state["run"]
+        runtime = state["runtime"]
+        runtime.active_node = "composer"
+        runtime.current_agent = AgentName.composer
+        runtime.phase = WorkflowPhase.composition
+        runtime.needs_revision = False
+
         output = await self._run_with_retry(
             run=run,
+            runtime=runtime,
             agent=AgentName.composer,
             action=lambda: self.composer.run(
                 ComposerInput(
@@ -184,13 +273,35 @@ class MultiAgentOrchestrator:
                     review=state["review"],
                 )
             ),
-            fallback=lambda: self._fallback_final(state["prompt"], state["plan"], state["research"], state["execution"], state["review"]),
+            fallback=lambda: self._fallback_final(
+                state["prompt"],
+                state["plan"],
+                state["research"],
+                state["execution"],
+                state["review"],
+            ),
         )
         run.final = output
-        return {**state, "run": run, "final": output}
+        runtime.phase = WorkflowPhase.completed
+        return self._state_update(state, run=run, runtime=runtime, final=output)
 
-    async def _run_with_retry(self, *, run: RunRecord, agent: AgentName, action: Callable[[], Any], fallback: Callable[[], Any]):
+    def _route_after_review(self, state: GraphState) -> Literal["executor", "composer"]:
+        runtime = state["runtime"]
+        if runtime.needs_revision and runtime.review_iterations <= runtime.max_review_loops:
+            return "executor"
+        return "composer"
+
+    async def _run_with_retry(
+        self,
+        *,
+        run: RunRecord,
+        runtime: OrchestrationRuntime,
+        agent: AgentName,
+        action: Callable[[], Any],
+        fallback: Callable[[], Any],
+    ):
         self._mark_status(run, agent, AgentStatus.running, f"{agent.value.title()} agent started")
+        run.runtime = runtime
         self.store.save_run(run)
         attempts = 0
 
@@ -198,10 +309,14 @@ class MultiAgentOrchestrator:
             try:
                 result = await action()
                 self._mark_status(run, agent, AgentStatus.completed, f"{agent.value.title()} agent completed", result)
+                runtime.completed_nodes.append(agent.value)
+                runtime.last_error = None
+                run.runtime = runtime
                 self.store.save_run(run)
                 return result
             except Exception as exc:  # noqa: BLE001
                 attempts += 1
+                runtime.last_error = str(exc)
                 if attempts > 2:
                     result = fallback()
                     self._mark_status(
@@ -211,12 +326,50 @@ class MultiAgentOrchestrator:
                         f"{agent.value.title()} used fallback after retries",
                         result,
                     )
-                    self._append_event(run, "agent.fallback", f"{agent.value.title()} fallback used", agent, {"error": str(exc)})
+                    runtime.completed_nodes.append(f"{agent.value}:fallback")
+                    run.runtime = runtime
+                    self._append_event(
+                        run,
+                        "agent.fallback",
+                        f"{agent.value.title()} fallback used",
+                        agent,
+                        {"error": str(exc), "phase": runtime.phase.value},
+                    )
                     self.store.save_run(run)
                     return result
-                self._append_event(run, "agent.retry", f"Retrying {agent.value}", agent, {"attempt": attempts, "error": str(exc)})
+                self._append_event(
+                    run,
+                    "agent.retry",
+                    f"Retrying {agent.value}",
+                    agent,
+                    {"attempt": attempts, "error": str(exc), "phase": runtime.phase.value},
+                )
+                run.runtime = runtime
                 self.store.save_run(run)
                 await asyncio.sleep(0.4 * attempts)
+
+    def _state_update(self, state: GraphState, **updates: Any) -> GraphState:
+        merged = {**state, **updates}
+        run: RunRecord = merged["run"]
+        runtime: OrchestrationRuntime = merged["runtime"]
+        run.runtime = runtime
+        self._touch(run)
+        return merged
+
+    def _finalize_run(self, run: RunRecord) -> None:
+        run.status = RunStatus.completed
+        run.updated_at = now()
+        run.runtime.phase = WorkflowPhase.completed
+        run.runtime.current_agent = AgentName.orchestrator
+        run.runtime.active_node = "completed"
+        self._mark_status(run, AgentName.orchestrator, AgentStatus.completed, "Workflow completed")
+        self.store.save_run(run)
+
+    def _extract_run_from_chunk(self, chunk: dict[str, Any]) -> RunRecord | None:
+        for payload in chunk.values():
+            if isinstance(payload, dict) and "run" in payload:
+                return payload["run"]
+        return None
 
     def _mark_status(self, run: RunRecord, agent_name: AgentName, status: AgentStatus, message: str, detail: Any | None = None) -> None:
         for agent in run.agents:

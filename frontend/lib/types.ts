@@ -87,5 +87,17 @@ export interface RunRecord {
     review_notes: string[];
     final_deliverable: string;
   } | null;
+  runtime?: {
+    phase: string;
+    current_agent: AgentName;
+    execution_iterations: number;
+    review_iterations: number;
+    max_review_loops: number;
+    needs_revision: boolean;
+    revision_notes: string[];
+    completed_nodes: string[];
+    active_node: string;
+    last_error?: string | null;
+  } | null;
   error?: string | null;
 }

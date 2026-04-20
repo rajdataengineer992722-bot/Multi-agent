@@ -28,9 +28,12 @@ export function PromptInput({ onSubmit, isRunning }: PromptInputProps) {
       <div className="mb-4 flex items-center justify-between">
         <div>
           <p className="text-sm uppercase tracking-[0.25em] text-accentCold/70">Mission Control</p>
-          <h2 className="mt-1 text-2xl font-semibold">Launch a multi-agent run</h2>
+          <h2 className="mt-1 text-3xl font-semibold tracking-tight">Launch a multi-agent run</h2>
+          <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-400">
+            Give the orchestrator a concrete mission and inspect every structured handoff as the agent team collaborates.
+          </p>
         </div>
-        <div className="rounded-full border border-line px-3 py-1 text-xs text-slate-300">
+        <div className="rounded-full border border-line bg-slate-950/30 px-3 py-1 text-xs text-slate-300">
           Structured execution
         </div>
       </div>
@@ -40,7 +43,7 @@ export function PromptInput({ onSubmit, isRunning }: PromptInputProps) {
           value={prompt}
           onChange={(event) => setPrompt(event.target.value)}
           rows={5}
-          className="w-full rounded-2xl border border-line bg-slate-950/40 px-4 py-4 text-sm text-slate-100 outline-none transition focus:border-accentCold/60"
+          className="w-full rounded-[24px] border border-line bg-slate-950/40 px-5 py-4 text-sm text-slate-100 outline-none transition focus:border-accentCold/60"
           placeholder="Describe the task you want the agent team to solve..."
         />
 
