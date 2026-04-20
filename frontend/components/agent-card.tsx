@@ -51,12 +51,12 @@ export function AgentCard({ agent }: { agent: AgentSnapshot }) {
           {agent.status}
         </div>
       </div>
-      <div className="mt-4 rounded-2xl border border-line bg-slate-950/30 p-3">
+      <div className="mt-4 rounded-2xl border border-line bg-slate-950/30 p-3.5">
         <div className="mb-2 flex items-center gap-2 text-[11px] uppercase tracking-[0.22em] text-slate-500">
           <Sparkles className="size-3" />
           Output preview
         </div>
-        <div className="data-scroll max-h-[136px] overflow-y-auto pr-1">
+        <div className="data-scroll max-h-[156px] overflow-y-auto pr-1">
           <p className="text-xs leading-6 text-slate-300 break-words">
             {agent.output_preview || "Waiting for execution details."}
           </p>

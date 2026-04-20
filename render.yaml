@@ -1,0 +1,47 @@
+services:
+  - type: web
+    name: multi-agent-ai-backend
+    runtime: python
+    rootDir: backend
+    plan: free
+    buildCommand: pip install -e .
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.11
+      - key: LLM_PROVIDER
+        value: xai
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: XAI_API_KEY
+        sync: false
+      - key: OPENAI_MODEL
+        value: gpt-4.1-mini
+      - key: OPENAI_BASE_URL
+        value: https://api.openai.com/v1
+      - key: XAI_MODEL
+        value: grok-4.20-reasoning
+      - key: XAI_BASE_URL
+        value: https://api.x.ai/v1
+      - key: CORS_ORIGINS
+        fromService:
+          type: web
+          name: multi-agent-ai-frontend
+          envVarKey: RENDER_EXTERNAL_URL
+
+  - type: web
+    name: multi-agent-ai-frontend
+    runtime: node
+    rootDir: frontend
+    plan: free
+    buildCommand: npm install && npm run build
+    startCommand: npm run start -- --hostname 0.0.0.0 --port $PORT
+    envVars:
+      - key: NODE_VERSION
+        value: 20.18.0
+      - key: NEXT_PUBLIC_API_BASE_URL
+        fromService:
+          type: web
+          name: multi-agent-ai-backend
+          envVarKey: RENDER_EXTERNAL_URL

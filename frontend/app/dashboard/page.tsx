@@ -101,7 +101,7 @@ export default function DashboardPage() {
           </div>
         </motion.div>
 
-        <div className="grid gap-5 xl:grid-cols-[340px_minmax(0,1fr)_480px] xl:items-start">
+        <div className="grid gap-5 xl:grid-cols-[380px_minmax(0,1fr)_480px] xl:items-start">
           <aside className="space-y-5 xl:sticky xl:top-4 xl:max-h-[calc(100vh-2rem)] xl:overflow-hidden">
             <div className="panel p-6">
               <p className="text-xs uppercase tracking-[0.3em] text-accent/70">Agent Mesh</p>

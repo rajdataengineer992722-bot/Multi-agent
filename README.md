@@ -52,6 +52,51 @@ copy ..\.env.example .env.local
 npm run dev
 ```
 
+## Deployment
+
+### Recommended setup
+
+This repository is prepared for a Render Blueprint deployment using [render.yaml](./render.yaml).
+
+Why Render:
+
+- official monorepo support with `rootDir`
+- can host both the FastAPI backend and Next.js frontend
+- can wire service URLs between frontend and backend using Blueprint environment variables
+
+### Deploy on Render
+
+1. Push the latest code to GitHub.
+2. Open Render and create a new Blueprint.
+3. Connect the GitHub repository:
+   - `https://github.com/rajdataengineer992722-bot/Multi-agent.git`
+4. Render will detect `render.yaml` at the repository root.
+5. During Blueprint setup, provide secret values for:
+   - `OPENAI_API_KEY` if using OpenAI
+   - `XAI_API_KEY` if using Grok/xAI
+6. Let Render create both services:
+   - `multi-agent-ai-backend`
+   - `multi-agent-ai-frontend`
+7. After deploy finishes:
+   - open the frontend Render URL
+   - verify the backend health endpoint at `/api/health`
+   - run a sample prompt from the dashboard
+
+### What `render.yaml` does
+
+- Deploys the backend from `backend/`
+- Deploys the frontend from `frontend/`
+- Pins Python and Node versions for consistency
+- Sets the backend health check to `/api/health`
+- Injects the backend public URL into the frontend as `NEXT_PUBLIC_API_BASE_URL`
+- Injects the frontend public URL into the backend `CORS_ORIGINS`
+
+### Notes
+
+- Render free web services can spin down after inactivity.
+- If you later use a custom frontend domain, update `CORS_ORIGINS` in Render to include it.
+- If you later use a custom backend domain, update `NEXT_PUBLIC_API_BASE_URL` in Render to point to that domain.
+
 ## Local URLs
 
 - Frontend: `http://localhost:3000`
