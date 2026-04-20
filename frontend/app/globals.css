@@ -1,0 +1,38 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  @apply bg-bg text-slate-100 antialiased;
+  background-image:
+    radial-gradient(circle at top left, rgba(125, 249, 198, 0.14), transparent 28%),
+    radial-gradient(circle at top right, rgba(124, 200, 255, 0.16), transparent 34%),
+    linear-gradient(180deg, #08111e 0%, #050a12 100%);
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  background-image: theme("backgroundImage.grid");
+  background-size: 44px 44px;
+  opacity: 0.18;
+  pointer-events: none;
+  mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.95), transparent 92%);
+}
+
+.panel {
+  @apply rounded-3xl border border-line bg-panel/80 shadow-glow backdrop-blur-xl;
+}
+
+.panel-soft {
+  @apply rounded-2xl border border-line bg-panelSoft/80 backdrop-blur-md;
+}
